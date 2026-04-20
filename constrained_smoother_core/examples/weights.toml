@@ -1,0 +1,20 @@
+[smoother]
+minimum_turning_radius = 0.4
+curve_weight = 0.5
+distance_weight = 0.0
+smooth_weight = 3000.0
+cost_weight = 0.000045
+cusp_cost_multiplier = 3.0
+cusp_zone_length = 2.5
+path_downsampling_factor = 1
+keep_start_orientation = true
+keep_goal_orientation = true
+reversing_enabled = true
+cost_check_points = []
+
+[optimizer]
+max_iterations = 70
+debug_optimizer = false
+gradient_tol = 50.0
+fn_tol = 1.0e-15
+param_tol = 1.0e-20
