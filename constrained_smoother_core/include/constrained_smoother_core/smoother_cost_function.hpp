@@ -43,15 +43,16 @@ public:
   template<typename T>
   bool operator()(const T * const pt, const T * const pt_next, const T * const pt_prev, T * residuals) const
   {
-    Eigen::Map<const Eigen::Matrix<T, 2, 1>> xi(pt);
-    Eigen::Map<const Eigen::Matrix<T, 2, 1>> xi_next(pt_next);
-    Eigen::Map<const Eigen::Matrix<T, 2, 1>> xi_prev(pt_prev);
+    Eigen::Matrix<T, 2, 1> xi(pt[0], pt[1]);
+    Eigen::Matrix<T, 2, 1> xi_next(pt_next[0], pt_next[1]);
+    Eigen::Matrix<T, 2, 1> xi_prev(pt_prev[0], pt_prev[1]);
+    Eigen::Matrix<T, 2, 1> xi_original = original_pos_.template cast<T>();
     Eigen::Map<Eigen::Matrix<T, 6, 1>> residual(residuals);
     residual.setZero();
 
     addSmoothingResidual(params_.smooth_weight_sqrt(), xi, xi_next, xi_prev, residual[0], residual[1]);
     addCurvatureResidual(params_.curve_weight_sqrt(), xi, xi_next, xi_prev, residual[2]);
-    addDistanceResidual(params_.distance_weight_sqrt(), xi, original_pos_.template cast<T>(), residual[3], residual[4]);
+    addDistanceResidual(params_.distance_weight_sqrt(), xi, xi_original, residual[3], residual[4]);
     addCostResidual(cost_weight_sqrt_, xi, xi_next, xi_prev, residual[5]);
     return true;
   }
@@ -125,7 +126,7 @@ private:
         static_cast<T>(params_.cost_check_points[i]),
         static_cast<T>(params_.cost_check_points[i + 1]),
         static_cast<T>(1.0));
-      const auto world_pt = (transform * local_pt).template block<2, 1>(0, 0);
+      const Eigen::Matrix<T, 2, 1> world_pt = (transform * local_pt).template block<2, 1>(0, 0);
       r += static_cast<T>(weight_sqrt) * static_cast<T>(params_.cost_check_points[i + 2]) * sampler_->sample(world_pt);
     }
   }

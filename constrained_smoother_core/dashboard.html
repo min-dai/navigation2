@@ -1,0 +1,573 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Constrained Smoother Dashboard</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #1a1f28;
+      --muted: #657084;
+      --line: #d7dce5;
+      --panel: #f7f8fb;
+      --control: #ffffff;
+      --blue: #1266d6;
+      --green: #16845b;
+      --red: #c73a2f;
+      --amber: #b46b00;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      color: var(--ink);
+      background: #ffffff;
+    }
+
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      min-height: 64px;
+      padding: 0 22px;
+      border-bottom: 1px solid var(--line);
+      background: #ffffff;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: 19px;
+      font-weight: 700;
+      letter-spacing: 0;
+    }
+
+    main {
+      display: grid;
+      grid-template-columns: minmax(320px, 1fr) 360px;
+      min-height: calc(100vh - 64px);
+    }
+
+    .stage {
+      display: grid;
+      grid-template-rows: minmax(360px, 1fr) auto;
+      min-width: 0;
+      background: #eef2f7;
+    }
+
+    .plot-wrap {
+      min-height: 360px;
+      padding: 20px;
+    }
+
+    canvas {
+      display: block;
+      width: 100%;
+      height: 100%;
+      min-height: 360px;
+      border: 1px solid var(--line);
+      background: #ffffff;
+    }
+
+    .stats {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(130px, 1fr));
+      gap: 1px;
+      border-top: 1px solid var(--line);
+      background: var(--line);
+    }
+
+    .stat {
+      min-height: 72px;
+      padding: 13px 18px;
+      background: #ffffff;
+    }
+
+    .stat span {
+      display: block;
+      margin-bottom: 7px;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 650;
+      text-transform: uppercase;
+      letter-spacing: 0;
+    }
+
+    .stat strong {
+      font-size: 24px;
+      font-weight: 760;
+      letter-spacing: 0;
+    }
+
+    aside {
+      overflow: auto;
+      border-left: 1px solid var(--line);
+      background: var(--panel);
+    }
+
+    .section {
+      padding: 18px 18px 20px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    h2 {
+      margin: 0 0 14px;
+      font-size: 14px;
+      font-weight: 760;
+      letter-spacing: 0;
+    }
+
+    .control {
+      display: grid;
+      grid-template-columns: 1fr 88px;
+      gap: 10px 12px;
+      align-items: center;
+      margin-bottom: 14px;
+    }
+
+    label {
+      color: #303746;
+      font-size: 13px;
+      font-weight: 650;
+    }
+
+    output {
+      min-width: 78px;
+      padding: 5px 7px;
+      border: 1px solid var(--line);
+      background: var(--control);
+      color: #29313d;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 12px;
+      text-align: right;
+    }
+
+    input[type="range"] {
+      grid-column: 1 / -1;
+      width: 100%;
+      accent-color: var(--blue);
+    }
+
+    .toggle {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      min-height: 34px;
+      margin-bottom: 10px;
+      font-size: 13px;
+      font-weight: 650;
+    }
+
+    input[type="checkbox"] {
+      width: 18px;
+      height: 18px;
+      accent-color: var(--green);
+    }
+
+    .actions {
+      display: flex;
+      gap: 10px;
+      margin-top: 4px;
+    }
+
+    button {
+      min-height: 36px;
+      padding: 0 13px;
+      border: 1px solid #aeb7c7;
+      background: #ffffff;
+      color: #1d2633;
+      font-weight: 700;
+      cursor: pointer;
+    }
+
+    button:hover {
+      border-color: #7f8da3;
+      background: #f3f5f9;
+    }
+
+    .status {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      min-width: 132px;
+      justify-content: flex-end;
+      color: var(--muted);
+      font-size: 13px;
+      font-weight: 700;
+    }
+
+    .dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: var(--amber);
+    }
+
+    .connected .dot {
+      background: var(--green);
+    }
+
+    .error .dot {
+      background: var(--red);
+    }
+
+    .legend {
+      display: flex;
+      gap: 18px;
+      flex-wrap: wrap;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 650;
+    }
+
+    .key {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+    }
+
+    .swatch {
+      width: 24px;
+      height: 3px;
+      background: var(--blue);
+    }
+
+    .swatch.original {
+      background: #6b7280;
+    }
+
+    .swatch.obstacle {
+      background: var(--red);
+    }
+
+    @media (max-width: 880px) {
+      header {
+        align-items: flex-start;
+        flex-direction: column;
+        height: auto;
+        padding: 14px 16px;
+      }
+
+      main {
+        grid-template-columns: 1fr;
+      }
+
+      aside {
+        border-left: 0;
+        border-top: 1px solid var(--line);
+      }
+
+      .stats {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div>
+      <h1>Constrained Smoother Dashboard</h1>
+      <div class="legend" aria-label="plot legend">
+        <span class="key"><span class="swatch original"></span>Original</span>
+        <span class="key"><span class="swatch"></span>Smoothed</span>
+        <span class="key"><span class="swatch obstacle"></span>Obstacle</span>
+      </div>
+    </div>
+    <div id="status" class="status"><span class="dot"></span><span>Connecting</span></div>
+  </header>
+
+  <main>
+    <section class="stage">
+      <div class="plot-wrap">
+        <canvas id="plot" width="960" height="720"></canvas>
+      </div>
+      <div class="stats">
+        <div class="stat"><span>Residual</span><strong id="residual">--</strong></div>
+        <div class="stat"><span>Points</span><strong id="points">--</strong></div>
+        <div class="stat"><span>Obstacle Cost</span><strong id="obstacle-cost-stat">--</strong></div>
+      </div>
+    </section>
+
+    <aside>
+      <div class="section">
+        <h2>Optimization</h2>
+        <div class="control">
+          <label for="smooth_weight">smooth_weight</label><output id="smooth_weight_value"></output>
+          <input id="smooth_weight" data-group="params" type="range" min="0" max="20000" step="10">
+        </div>
+        <div class="control">
+          <label for="cost_weight">cost_weight</label><output id="cost_weight_value"></output>
+          <input id="cost_weight" data-group="params" type="range" min="0" max="0.01" step="0.00001">
+        </div>
+        <div class="control">
+          <label for="distance_weight">distance_weight</label><output id="distance_weight_value"></output>
+          <input id="distance_weight" data-group="params" type="range" min="0" max="20" step="0.1">
+        </div>
+        <div class="control">
+          <label for="curve_weight">curve_weight</label><output id="curve_weight_value"></output>
+          <input id="curve_weight" data-group="params" type="range" min="0" max="20" step="0.1">
+        </div>
+        <div class="control">
+          <label for="minimum_turning_radius">minimum_turning_radius</label><output id="minimum_turning_radius_value"></output>
+          <input id="minimum_turning_radius" data-group="params" type="range" min="0.05" max="2" step="0.01">
+        </div>
+        <label class="toggle" for="keep_start_orientation">keep_start_orientation<input id="keep_start_orientation" data-group="params" type="checkbox"></label>
+        <label class="toggle" for="keep_goal_orientation">keep_goal_orientation<input id="keep_goal_orientation" data-group="params" type="checkbox"></label>
+      </div>
+
+      <div class="section">
+        <h2>Obstacle</h2>
+        <div class="control">
+          <label for="x">x</label><output id="x_value"></output>
+          <input id="x" data-group="obstacle" type="range" min="0" max="6.5" step="0.1">
+        </div>
+        <div class="control">
+          <label for="y">y</label><output id="y_value"></output>
+          <input id="y" data-group="obstacle" type="range" min="0" max="6.5" step="0.1">
+        </div>
+        <div class="control">
+          <label for="width">width</label><output id="width_value"></output>
+          <input id="width" data-group="obstacle" type="range" min="0.1" max="3" step="0.1">
+        </div>
+        <div class="control">
+          <label for="height">height</label><output id="height_value"></output>
+          <input id="height" data-group="obstacle" type="range" min="0.1" max="3" step="0.1">
+        </div>
+        <div class="control">
+          <label for="cost">cost</label><output id="cost_value"></output>
+          <input id="cost" data-group="obstacle" type="range" min="0" max="255" step="1">
+        </div>
+        <div class="actions">
+          <button id="reset" type="button">Reset</button>
+          <button id="reconnect" type="button">Reconnect</button>
+        </div>
+      </div>
+    </aside>
+  </main>
+
+  <script>
+    const query = new URLSearchParams(window.location.search);
+    const WS_URL = query.get("ws") || "ws://127.0.0.1:8765";
+    const canvas = document.getElementById("plot");
+    const ctx = canvas.getContext("2d");
+    const statusEl = document.getElementById("status");
+    const state = {
+      ws: null,
+      data: null,
+      reconnectTimer: null,
+      updatingControls: false
+    };
+    const controls = [...document.querySelectorAll("input[data-group]")];
+
+    function setStatus(kind, text) {
+      statusEl.className = `status ${kind}`;
+      statusEl.querySelector("span:last-child").textContent = text;
+    }
+
+    function formatValue(key, value) {
+      if (key === "cost_weight") return Number(value).toFixed(5);
+      if (key === "minimum_turning_radius") return Number(value).toFixed(2);
+      if (key === "cost") return Number(value).toFixed(0);
+      return Number(value).toFixed(1).replace(/\.0$/, "");
+    }
+
+    function setOutput(input) {
+      const out = document.getElementById(`${input.id}_value`);
+      if (out) out.value = formatValue(input.id, input.value);
+    }
+
+    function resizeCanvas() {
+      const rect = canvas.getBoundingClientRect();
+      const scale = window.devicePixelRatio || 1;
+      canvas.width = Math.max(320, Math.floor(rect.width * scale));
+      canvas.height = Math.max(320, Math.floor(rect.height * scale));
+      ctx.setTransform(scale, 0, 0, scale, 0, 0);
+      draw();
+    }
+
+    function bounds(data) {
+      const pts = [...data.original_path, ...data.smoothed_path, ...data.obstacle_outline];
+      const xs = pts.map((p) => p.x);
+      const ys = pts.map((p) => p.y);
+      return {
+        minX: Math.min(-0.2, ...xs),
+        maxX: Math.max(6.8, ...xs),
+        minY: Math.min(-0.2, ...ys),
+        maxY: Math.max(6.8, ...ys)
+      };
+    }
+
+    function projector(data) {
+      const rect = canvas.getBoundingClientRect();
+      const b = bounds(data);
+      const pad = 34;
+      const sx = (rect.width - pad * 2) / (b.maxX - b.minX);
+      const sy = (rect.height - pad * 2) / (b.maxY - b.minY);
+      const scale = Math.min(sx, sy);
+      const ox = (rect.width - (b.maxX - b.minX) * scale) / 2;
+      const oy = (rect.height - (b.maxY - b.minY) * scale) / 2;
+      return (p) => ({
+        x: ox + (p.x - b.minX) * scale,
+        y: rect.height - (oy + (p.y - b.minY) * scale)
+      });
+    }
+
+    function drawGrid(toScreen) {
+      const rect = canvas.getBoundingClientRect();
+      ctx.clearRect(0, 0, rect.width, rect.height);
+      ctx.fillStyle = "#ffffff";
+      ctx.fillRect(0, 0, rect.width, rect.height);
+      ctx.strokeStyle = "#e5e9f0";
+      ctx.lineWidth = 1;
+      for (let i = 0; i <= 7; i += 1) {
+        const a = toScreen({x: i, y: 0});
+        const b = toScreen({x: i, y: 7});
+        const c = toScreen({x: 0, y: i});
+        const d = toScreen({x: 7, y: i});
+        ctx.beginPath();
+        ctx.moveTo(a.x, a.y);
+        ctx.lineTo(b.x, b.y);
+        ctx.moveTo(c.x, c.y);
+        ctx.lineTo(d.x, d.y);
+        ctx.stroke();
+      }
+    }
+
+    function drawPolyline(points, toScreen, color, width, dash = []) {
+      if (!points.length) return;
+      ctx.save();
+      ctx.strokeStyle = color;
+      ctx.lineWidth = width;
+      ctx.setLineDash(dash);
+      ctx.lineJoin = "round";
+      ctx.lineCap = "round";
+      ctx.beginPath();
+      points.forEach((p, i) => {
+        const s = toScreen(p);
+        if (i === 0) ctx.moveTo(s.x, s.y);
+        else ctx.lineTo(s.x, s.y);
+      });
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    function drawNodes(points, toScreen, color) {
+      ctx.fillStyle = color;
+      points.forEach((p) => {
+        const s = toScreen(p);
+        ctx.beginPath();
+        ctx.arc(s.x, s.y, 4, 0, Math.PI * 2);
+        ctx.fill();
+      });
+    }
+
+    function drawObstacle(data, toScreen) {
+      const o = data.obstacle;
+      const a = toScreen({x: o.x, y: o.y});
+      const b = toScreen({x: o.x + o.width, y: o.y + o.height});
+      ctx.fillStyle = "rgba(199, 58, 47, 0.16)";
+      ctx.strokeStyle = "#c73a2f";
+      ctx.lineWidth = 2;
+      ctx.fillRect(a.x, b.y, b.x - a.x, a.y - b.y);
+      ctx.strokeRect(a.x, b.y, b.x - a.x, a.y - b.y);
+    }
+
+    function draw() {
+      const data = state.data;
+      const rect = canvas.getBoundingClientRect();
+      if (!data) {
+        ctx.clearRect(0, 0, rect.width, rect.height);
+        ctx.fillStyle = "#ffffff";
+        ctx.fillRect(0, 0, rect.width, rect.height);
+        return;
+      }
+      const toScreen = projector(data);
+      drawGrid(toScreen);
+      drawObstacle(data, toScreen);
+      drawPolyline(data.original_path, toScreen, "#6b7280", 2, [8, 8]);
+      drawPolyline(data.smoothed_path, toScreen, "#1266d6", 4);
+      drawNodes(data.original_path, toScreen, "#6b7280");
+      drawNodes(data.smoothed_path, toScreen, "#1266d6");
+    }
+
+    function updateControls(data) {
+      state.updatingControls = true;
+      controls.forEach((input) => {
+        const source = data[input.dataset.group];
+        const value = source[input.id];
+        if (input.type === "checkbox") input.checked = Boolean(value);
+        else input.value = value;
+        setOutput(input);
+      });
+      state.updatingControls = false;
+    }
+
+    function updateStats(data) {
+      document.getElementById("residual").textContent = Number(data.residual_norm).toFixed(3);
+      document.getElementById("points").textContent = data.smoothed_path.length;
+      document.getElementById("obstacle-cost-stat").textContent = Number(data.obstacle.cost).toFixed(0);
+    }
+
+    function applyState(data) {
+      state.data = data;
+      updateControls(data);
+      updateStats(data);
+      draw();
+    }
+
+    function collectPayload() {
+      const payload = {type: "update", params: {}, obstacle: {}};
+      controls.forEach((input) => {
+        const target = payload[input.dataset.group];
+        target[input.id] = input.type === "checkbox" ? input.checked : Number(input.value);
+      });
+      return payload;
+    }
+
+    function sendUpdate() {
+      if (state.updatingControls || !state.ws || state.ws.readyState !== WebSocket.OPEN) return;
+      controls.forEach(setOutput);
+      state.ws.send(JSON.stringify(collectPayload()));
+    }
+
+    function connect() {
+      clearTimeout(state.reconnectTimer);
+      if (state.ws) state.ws.close();
+      setStatus("", "Connecting");
+      const ws = new WebSocket(WS_URL);
+      state.ws = ws;
+      ws.onopen = () => setStatus("connected", "Connected");
+      ws.onmessage = (event) => {
+        const msg = JSON.parse(event.data);
+        if (msg.type === "state") applyState(msg);
+      };
+      ws.onclose = () => {
+        setStatus("error", "Disconnected");
+        state.reconnectTimer = setTimeout(connect, 1500);
+      };
+      ws.onerror = () => setStatus("error", "Socket Error");
+    }
+
+    controls.forEach((input) => {
+      input.addEventListener("input", sendUpdate);
+      input.addEventListener("change", sendUpdate);
+    });
+    document.getElementById("reset").addEventListener("click", () => {
+      if (state.ws && state.ws.readyState === WebSocket.OPEN) {
+        state.ws.send(JSON.stringify({type: "reset"}));
+      }
+    });
+    document.getElementById("reconnect").addEventListener("click", connect);
+    window.addEventListener("resize", resizeCanvas);
+    resizeCanvas();
+    connect();
+  </script>
+</body>
+</html>

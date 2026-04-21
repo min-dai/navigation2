@@ -1,23 +1,30 @@
 #!/usr/bin/env python3
-"""Interactive web tuner for constrained smoother parameters and obstacle settings.
+"""Plain WebSocket server for the constrained smoother demo.
 
-Run with either:
+Run with:
   python app.py
-or:
-  streamlit run app.py
+
+Then open dashboard.html in a browser.
 """
 
 from __future__ import annotations
 
+import argparse
+import asyncio
+import json
 import math
-import sys
 from dataclasses import dataclass
-from typing import List, Tuple
+from pathlib import Path
+from typing import List
 
-import matplotlib.pyplot as plt
 import numpy as np
-import streamlit as st
 from scipy.optimize import least_squares
+import websockets
+
+
+OBSTACLE_CLEARANCE = 0.25
+OBSTACLE_WEIGHT_SCALE = 5.0
+SEGMENT_COST_SAMPLES = (0.25, 0.5, 0.75)
 
 
 @dataclass
@@ -29,6 +36,15 @@ class Params:
     minimum_turning_radius: float = 0.4
     keep_start_orientation: bool = True
     keep_goal_orientation: bool = True
+
+
+@dataclass
+class Obstacle:
+    x: float = 2.8
+    y: float = 2.0
+    width: float = 0.7
+    height: float = 2.0
+    cost: float = 220.0
 
 
 def arc_center(p_prev: np.ndarray, p: np.ndarray, p_next: np.ndarray) -> np.ndarray:
@@ -46,35 +62,31 @@ def arc_center(p_prev: np.ndarray, p: np.ndarray, p_next: np.ndarray) -> np.ndar
     return np.array([(det1 * n2[0] - det2 * n1[0]) / det, (det1 * n2[1] - det2 * n1[1]) / det])
 
 
-def bilinear_sample(costmap: np.ndarray, xy: np.ndarray, origin: Tuple[float, float], resolution: float) -> float:
-    gx = (xy[0] - origin[0]) / resolution
-    gy = (xy[1] - origin[1]) / resolution
-    if gx < 0 or gy < 0 or gx > costmap.shape[1] - 1 or gy > costmap.shape[0] - 1:
+def rectangle_signed_distance(xy: np.ndarray, obstacle: Obstacle) -> float:
+    left = obstacle.x
+    right = obstacle.x + obstacle.width
+    bottom = obstacle.y
+    top = obstacle.y + obstacle.height
+    x = xy[0]
+    y = xy[1]
+
+    outside_dx = max(left - x, 0.0, x - right)
+    outside_dy = max(bottom - y, 0.0, y - top)
+    outside_distance = math.hypot(outside_dx, outside_dy)
+    if outside_distance > 0.0:
+        return outside_distance
+
+    return -min(x - left, right - x, y - bottom, top - y)
+
+
+def obstacle_residual(xy: np.ndarray, obstacle: Obstacle, weight: float) -> float:
+    clearance_error = OBSTACLE_CLEARANCE - rectangle_signed_distance(xy, obstacle)
+    if clearance_error <= 0.0:
         return 0.0
-    x0, y0 = int(np.floor(gx)), int(np.floor(gy))
-    x1, y1 = min(x0 + 1, costmap.shape[1] - 1), min(y0 + 1, costmap.shape[0] - 1)
-    dx, dy = gx - x0, gy - y0
-    v00 = costmap[y0, x0]
-    v10 = costmap[y0, x1]
-    v01 = costmap[y1, x0]
-    v11 = costmap[y1, x1]
-    return float((1 - dx) * (1 - dy) * v00 + dx * (1 - dy) * v10 + (1 - dx) * dy * v01 + dx * dy * v11)
+    return weight * clearance_error / OBSTACLE_CLEARANCE
 
 
-def build_costmap(size: int, obstacle_x: float, obstacle_y: float, obstacle_w: float, obstacle_h: float, obstacle_cost: float):
-    resolution = 0.1
-    origin = (0.0, 0.0)
-    grid = np.zeros((size, size), dtype=np.float64)
-
-    x0 = int(max(0, obstacle_x / resolution))
-    y0 = int(max(0, obstacle_y / resolution))
-    x1 = int(min(size, (obstacle_x + obstacle_w) / resolution))
-    y1 = int(min(size, (obstacle_y + obstacle_h) / resolution))
-    grid[y0:y1, x0:x1] = obstacle_cost
-    return grid, origin, resolution
-
-
-def smooth_path(path: np.ndarray, params: Params, costmap: np.ndarray, origin: Tuple[float, float], resolution: float):
+def smooth_path(path: np.ndarray, params: Params, obstacle: Obstacle):
     original = path.copy()
     n = len(path)
 
@@ -88,10 +100,8 @@ def smooth_path(path: np.ndarray, params: Params, costmap: np.ndarray, origin: T
     if not variable_idx:
         return path, 0.0
 
-    x0 = path[variable_idx, :2].reshape(-1)
-
-    def unpack(xvec: np.ndarray) -> np.ndarray:
-        p = path.copy()
+    def unpack(base_path: np.ndarray, xvec: np.ndarray) -> np.ndarray:
+        p = base_path.copy()
         p[variable_idx, :2] = xvec.reshape(-1, 2)
         return p
 
@@ -101,8 +111,8 @@ def smooth_path(path: np.ndarray, params: Params, costmap: np.ndarray, origin: T
     wd = math.sqrt(params.distance_weight)
     wcur = math.sqrt(params.curve_weight)
 
-    def residuals(xvec: np.ndarray) -> np.ndarray:
-        p = unpack(xvec)
+    def residuals(base_path: np.ndarray, xvec: np.ndarray) -> np.ndarray:
+        p = unpack(base_path, xvec)
         r: List[float] = []
         for i in range(1, n - 1):
             pi = p[i, :2]
@@ -125,16 +135,57 @@ def smooth_path(path: np.ndarray, params: Params, costmap: np.ndarray, origin: T
                 r.append(0.0)
 
             r.extend((wd * (pi - original[i, :2])).tolist())
-            r.append(wc * bilinear_sample(costmap, pi, origin, resolution))
+            r.append(obstacle_residual(pi, obstacle, wc * obstacle.cost * OBSTACLE_WEIGHT_SCALE))
+
+        for i in range(n - 1):
+            p0 = p[i, :2]
+            p1 = p[i + 1, :2]
+            for t in SEGMENT_COST_SAMPLES:
+                sample = (1.0 - t) * p0 + t * p1
+                r.append(obstacle_residual(sample, obstacle, wc * obstacle.cost * OBSTACLE_WEIGHT_SCALE))
 
         return np.array(r, dtype=np.float64)
 
-    result = least_squares(residuals, x0, max_nfev=60)
-    return unpack(result.x), float(np.linalg.norm(residuals(result.x)))
+    def seeded_path(side: str) -> np.ndarray:
+        seed = path.copy()
+        left = obstacle.x - OBSTACLE_CLEARANCE
+        right = obstacle.x + obstacle.width + OBSTACLE_CLEARANCE
+        target_y = obstacle.y - OBSTACLE_CLEARANCE if side == "below" else obstacle.y + obstacle.height + OBSTACLE_CLEARANCE
+        for i in variable_idx:
+            x = seed[i, 0]
+            if left <= x <= right:
+                seed[i, 1] = target_y
+        return seed
+
+    def clearance_violation(candidate: np.ndarray) -> float:
+        violation = 0.0
+        for i in range(n - 1):
+            p0 = candidate[i, :2]
+            p1 = candidate[i + 1, :2]
+            for t in np.linspace(0.0, 1.0, 11):
+                sample = (1.0 - t) * p0 + t * p1
+                violation += max(0.0, OBSTACLE_CLEARANCE - rectangle_signed_distance(sample, obstacle))
+        return violation
+
+    best_path = path
+    best_norm = math.inf
+    best_violation = math.inf
+    for seed in (path, seeded_path("below"), seeded_path("above")):
+        x0 = seed[variable_idx, :2].reshape(-1)
+        result = least_squares(lambda xvec: residuals(seed, xvec), x0, max_nfev=120)
+        candidate = unpack(seed, result.x)
+        norm = float(np.linalg.norm(residuals(seed, result.x)))
+        violation = clearance_violation(candidate)
+        if (violation, norm) < (best_violation, best_norm):
+            best_path = candidate
+            best_norm = norm
+            best_violation = violation
+
+    return best_path, best_norm
 
 
 def default_path() -> np.ndarray:
-    pts = np.array(
+    return np.array(
         [
             [0.0, 0.0, 1.0],
             [0.5, 0.2, 1.0],
@@ -149,73 +200,145 @@ def default_path() -> np.ndarray:
         ],
         dtype=np.float64,
     )
-    return pts
 
 
-def render_app() -> None:
-    st.set_page_config(page_title="Constrained Smoother Live Tuner", layout="wide")
-    st.title("Constrained Smoother — Live Tuning Session")
-    st.caption("Tune optimization weights and obstacle settings, then inspect the solved path.")
-
-    c1, c2 = st.columns(2)
-
-    with c1:
-        st.subheader("Optimization Parameters")
-        params = Params(
-            smooth_weight=st.slider("smooth_weight", 10.0, 20000.0, 3000.0, 10.0),
-            cost_weight=st.slider("cost_weight", 0.0, 0.01, 4.5e-5, 1e-5, format="%.6f"),
-            distance_weight=st.slider("distance_weight", 0.0, 20.0, 0.0, 0.1),
-            curve_weight=st.slider("curve_weight", 0.0, 20.0, 0.5, 0.1),
-            minimum_turning_radius=st.slider("minimum_turning_radius", 0.05, 2.0, 0.4, 0.01),
-            keep_start_orientation=st.checkbox("keep_start_orientation", value=True),
-            keep_goal_orientation=st.checkbox("keep_goal_orientation", value=True),
-        )
-
-    with c2:
-        st.subheader("Obstacle Settings")
-        obstacle_x = st.slider("obstacle_x", 0.0, 5.0, 2.8, 0.1)
-        obstacle_y = st.slider("obstacle_y", 0.0, 5.0, 2.0, 0.1)
-        obstacle_w = st.slider("obstacle_width", 0.1, 3.0, 0.7, 0.1)
-        obstacle_h = st.slider("obstacle_height", 0.1, 3.0, 2.0, 0.1)
-        obstacle_cost = st.slider("obstacle_cost", 0.0, 255.0, 220.0, 1.0)
-
-    path = default_path()
-    costmap, origin, resolution = build_costmap(70, obstacle_x, obstacle_y, obstacle_w, obstacle_h, obstacle_cost)
-    solved, residual_norm = smooth_path(path, params, costmap, origin, resolution)
-
-    fig, ax = plt.subplots(figsize=(8, 6))
-    ax.plot(path[:, 0], path[:, 1], "o--", label="original", color="gray")
-    ax.plot(solved[:, 0], solved[:, 1], "o-", label="smoothed", color="tab:blue")
-    rect = plt.Rectangle((obstacle_x, obstacle_y), obstacle_w, obstacle_h, color="tab:red", alpha=0.25)
-    ax.add_patch(rect)
-    ax.set_xlim(-0.2, 6.8)
-    ax.set_ylim(-0.2, 6.8)
-    ax.set_aspect("equal", adjustable="box")
-    ax.grid(True, alpha=0.3)
-    ax.legend()
-    st.pyplot(fig)
-
-    st.metric("Residual norm", f"{residual_norm:.3f}")
-    st.dataframe(
-        {
-            "x_original": path[:, 0],
-            "y_original": path[:, 1],
-            "x_solved": solved[:, 0],
-            "y_solved": solved[:, 1],
-        },
-        use_container_width=True,
+def obstacle_outline(obstacle: Obstacle) -> np.ndarray:
+    return np.array(
+        [
+            [obstacle.x, obstacle.y],
+            [obstacle.x + obstacle.width, obstacle.y],
+            [obstacle.x + obstacle.width, obstacle.y + obstacle.height],
+            [obstacle.x, obstacle.y + obstacle.height],
+            [obstacle.x, obstacle.y],
+        ],
+        dtype=np.float64,
     )
 
 
+def make_state(path: np.ndarray, solved: np.ndarray, params: Params, obstacle: Obstacle, residual_norm: float):
+    return {
+        "type": "state",
+        "residual_norm": residual_norm,
+        "params": params.__dict__,
+        "obstacle": obstacle.__dict__,
+        "original_path": [{"x": float(p[0]), "y": float(p[1]), "direction_sign": float(p[2])} for p in path],
+        "smoothed_path": [{"x": float(p[0]), "y": float(p[1]), "direction_sign": float(p[2])} for p in solved],
+        "obstacle_outline": [{"x": float(p[0]), "y": float(p[1])} for p in obstacle_outline(obstacle)],
+    }
+
+
+def apply_updates(target, values: dict, allowed: dict[str, tuple[float | None, float | None]]) -> None:
+    for key, value in values.items():
+        if key not in allowed:
+            continue
+        low, high = allowed[key]
+        if isinstance(getattr(target, key), bool):
+            setattr(target, key, bool(value))
+            continue
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            continue
+        if low is not None:
+            number = max(low, number)
+        if high is not None:
+            number = min(high, number)
+        setattr(target, key, number)
+
+
+def solve_state(params: Params, obstacle: Obstacle) -> dict:
+    path = default_path()
+    solved, residual_norm = smooth_path(path, params, obstacle)
+    return make_state(path, solved, params, obstacle, residual_norm)
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Serve constrained smoother data over a plain local WebSocket.")
+    parser.add_argument("--host", default="127.0.0.1")
+    parser.add_argument("--port", type=int, default=8765)
+    parser.add_argument("--smooth-weight", type=float, default=3000.0)
+    parser.add_argument("--cost-weight", type=float, default=4.5e-5)
+    parser.add_argument("--distance-weight", type=float, default=0.0)
+    parser.add_argument("--curve-weight", type=float, default=0.5)
+    parser.add_argument("--minimum-turning-radius", type=float, default=0.4)
+    parser.add_argument("--allow-start-orientation", action="store_true", help="Allow the second path point to move.")
+    parser.add_argument("--allow-goal-orientation", action="store_true", help="Allow the penultimate path point to move.")
+    parser.add_argument("--obstacle-x", type=float, default=2.8)
+    parser.add_argument("--obstacle-y", type=float, default=2.0)
+    parser.add_argument("--obstacle-width", type=float, default=0.7)
+    parser.add_argument("--obstacle-height", type=float, default=2.0)
+    parser.add_argument("--obstacle-cost", type=float, default=220.0)
+    return parser.parse_args()
+
+
+async def run_server(args: argparse.Namespace) -> None:
+    params = Params(
+        smooth_weight=args.smooth_weight,
+        cost_weight=args.cost_weight,
+        distance_weight=args.distance_weight,
+        curve_weight=args.curve_weight,
+        minimum_turning_radius=args.minimum_turning_radius,
+        keep_start_orientation=not args.allow_start_orientation,
+        keep_goal_orientation=not args.allow_goal_orientation,
+    )
+    obstacle = Obstacle(
+        x=args.obstacle_x,
+        y=args.obstacle_y,
+        width=args.obstacle_width,
+        height=args.obstacle_height,
+        cost=args.obstacle_cost,
+    )
+
+    param_limits = {
+        "smooth_weight": (0.0, 20000.0),
+        "cost_weight": (0.0, 0.01),
+        "distance_weight": (0.0, 20.0),
+        "curve_weight": (0.0, 20.0),
+        "minimum_turning_radius": (0.05, 2.0),
+        "keep_start_orientation": (None, None),
+        "keep_goal_orientation": (None, None),
+    }
+    obstacle_limits = {
+        "x": (0.0, 6.5),
+        "y": (0.0, 6.5),
+        "width": (0.1, 3.0),
+        "height": (0.1, 3.0),
+        "cost": (0.0, 255.0),
+    }
+
+    async def send_state(websocket) -> None:
+        state = await asyncio.to_thread(solve_state, params, obstacle)
+        await websocket.send(json.dumps(state))
+
+    async def handler(websocket) -> None:
+        await send_state(websocket)
+        async for raw_message in websocket:
+            try:
+                message = json.loads(raw_message)
+            except json.JSONDecodeError:
+                await websocket.send(json.dumps({"type": "error", "message": "invalid json"}))
+                continue
+
+            if message.get("type") == "update":
+                apply_updates(params, message.get("params", {}), param_limits)
+                apply_updates(obstacle, message.get("obstacle", {}), obstacle_limits)
+                await send_state(websocket)
+            elif message.get("type") == "reset":
+                params.__dict__.update(Params().__dict__)
+                obstacle.__dict__.update(Obstacle().__dict__)
+                await send_state(websocket)
+            else:
+                await websocket.send(json.dumps({"type": "error", "message": "unknown message type"}))
+
+    dashboard = Path(__file__).with_name("dashboard.html")
+    print(f"WebSocket server listening on ws://{args.host}:{args.port}")
+    print(f"Dashboard: {dashboard}")
+    async with websockets.serve(handler, args.host, args.port):
+        await asyncio.Future()
+
+
 def run() -> None:
-    if getattr(st, "_is_running_with_streamlit", False):
-        render_app()
-        return
-
-    from streamlit.web import cli as stcli
-
-    sys.argv = ["streamlit", "run", __file__, "--server.headless=false", "--server.port=8501"]
-    raise SystemExit(stcli.main())
+    asyncio.run(run_server(parse_args()))
 
 
 if __name__ == "__main__":

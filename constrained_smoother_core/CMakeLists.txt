@@ -6,6 +6,39 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 include(FetchContent)
+include(CMakePackageConfigHelpers)
+
+# Ceres 2.2 requests Eigen 3.3 through find_package(), which rejects newer
+# Homebrew Eigen releases such as 5.x. Pin Eigen to a known Ceres-compatible
+# 3.x release and expose a minimal package config for Ceres to consume.
+FetchContent_Declare(
+  eigen
+  GIT_REPOSITORY https://gitlab.com/libeigen/eigen.git
+  GIT_TAG 3.4.0
+  SOURCE_SUBDIR cmake-no-op
+)
+FetchContent_MakeAvailable(eigen)
+FetchContent_GetProperties(eigen)
+
+set(_csc_eigen3_config_dir "${CMAKE_BINARY_DIR}/eigen3-config")
+file(MAKE_DIRECTORY "${_csc_eigen3_config_dir}")
+file(WRITE "${_csc_eigen3_config_dir}/Eigen3Config.cmake"
+  "set(Eigen3_VERSION 3.4.0)\n"
+  "set(EIGEN3_VERSION_STRING 3.4.0)\n"
+  "if(NOT TARGET Eigen3::Eigen)\n"
+  "  add_library(Eigen3::Eigen INTERFACE IMPORTED)\n"
+  "  set_target_properties(Eigen3::Eigen PROPERTIES\n"
+  "    INTERFACE_INCLUDE_DIRECTORIES \"${eigen_SOURCE_DIR}\"\n"
+  "  )\n"
+  "endif()\n"
+  "set(Eigen3_FOUND TRUE)\n"
+)
+write_basic_package_version_file(
+  "${_csc_eigen3_config_dir}/Eigen3ConfigVersion.cmake"
+  VERSION 3.4.0
+  COMPATIBILITY AnyNewerVersion
+)
+set(Eigen3_DIR "${_csc_eigen3_config_dir}" CACHE PATH "Eigen3 package config directory" FORCE)
 
 # Ceres (and transitive dependencies) via FetchContent.
 FetchContent_Declare(
